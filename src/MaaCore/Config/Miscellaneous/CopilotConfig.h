@@ -11,8 +11,11 @@ public:
     static battle::copilot::OperUsageGroups parse_groups(const json::value& json);
     static battle::copilot::TriggerInfo parse_trigger(const json::value& json);
     static bool parse_action(const json::value& json, asst::battle::copilot::Action*);
-    static std::vector<battle::copilot::ActionPtr> parse_actions_ptr(const json::value& json);
     static std::vector<battle::copilot::Action> parse_actions(const json::value& json);
+    static std::vector<battle::copilot::ActionPtr> parse_actions_ptr(const json::value& json);
+    static void parse_require_node(const json::value& json, asst::battle::copilot::Require::Node* _Node);
+    static bool parse_require(const json::value& json, asst::battle::copilot::Require*);
+    static std::vector<battle::copilot::Require> parse_requires(const json::value& json);
     static battle::RoleCounts parse_role_counts(const json::value& json);
     static battle::DeployDirection string_to_direction(const std::string& str);
 
@@ -22,6 +25,8 @@ public:
     const battle::copilot::CombatData& get_data() const noexcept { return m_data; }
 
     const std::string& get_stage_name() const noexcept { return m_data.info.stage_name; }
+
+    auto dump_requires() const -> std::string;
 
     bool parse_magic_code(const std::string& copilot_magic_code);
     void clear();

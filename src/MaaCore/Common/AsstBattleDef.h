@@ -419,11 +419,66 @@ struct BasicInfo
     std::string details_color;
 };
 
+struct Require
+{
+    enum class NodeType
+    {
+        None = 0,      // 初始化
+        Not,           // 反逻辑
+        Or,            // 或逻辑
+        And,           // 与逻辑
+        Protentiality, // 潜能等级
+        Elite,         // 精英化
+        Level,         // 等级
+        Skill,         // 使用技能
+        Skill_level,   // 技能等级
+        Module,        // 模组
+        Trust,         // 信赖度
+        Healthy,       // 血量
+        Attack,        // 攻击
+        Defence,       // 防御
+
+        Butt
+    };
+
+    enum class Relation
+    {
+        EqualTo = 0,
+        NotEqual,
+        Greater,
+        GreaterThan,
+        Less,
+        LessThan,
+        Between,
+
+        Butt
+    };
+
+    struct Node
+    {
+        using ptr = std::shared_ptr<Node>;
+
+        NodeType t = NodeType::None;
+        Relation r = Relation::GreaterThan;
+        std::pair<int, int> range; // 这里是用来表述数据的，如果是单值取第一个，如果是范围值可以用两个
+
+        std::vector<ptr> next; // 表示跟其他描述之间的关联关系
+
+        // 通过RAII创建描述节点
+        static auto create() -> ptr { return std::make_shared<Node>(); }
+    };
+
+    std::string name; // 干员或者群组
+    Node top;
+    std::string tips; // 其他补充要求
+};
+
 struct CombatData // 作业 JSON 数据
 {
     BasicInfo info;
     OperUsageGroups groups;
     std::vector<Action> actions;
+    std::vector<Require> requirements;
 };
 } // namespace copilot
 

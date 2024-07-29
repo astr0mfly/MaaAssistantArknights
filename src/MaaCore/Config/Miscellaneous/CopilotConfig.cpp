@@ -40,6 +40,76 @@ bool asst::CopilotConfig::parse_magic_code(const std::string& copilot_magic_code
     return false;
 }
 
+auto asst::CopilotConfig::dump_requires() const -> std::string
+{
+    if (m_data.requirements.empty()) {
+        return std::string("这个作业没有干员需求");
+    }
+
+    static const std::array<std::string, static_cast<size_t>(Require::NodeType::Butt)> NodeTypeMapping = {
+        "初始", "不要",     "或者", "并且", "潜能",     "精英", "等级",
+        "技能", "技能等级", "模组", "信赖", "血量上限", "攻击", "防御"
+    };
+
+    static const std::array<std::string, static_cast<size_t>(Require::Relation::Butt)> RelationNameMapping = {
+        "等于", "不等于", "大于", "大于等于", "小于", "小于等于", "范围是"
+    };
+
+    std::ostringstream desc(std::ios::app);
+
+    auto funcDumpNode = [&](auto&& _Self, Require::Node const* _Cur) {
+        switch (_Cur->t) {
+        case Require::NodeType::Not: {
+            // 对于逻辑节点，如果下面没有内容，不需要转印
+            if (_Cur->next.empty()) {
+                return;
+            }
+
+            desc << NodeTypeMapping[static_cast<size_t>(_Cur->t)] << " (";
+            _Self(_Self, _Cur->next.front().get());
+            desc << ") ";
+        } break;
+        case Require::NodeType::Or:
+        case Require::NodeType::And: {
+            // 对于逻辑节点，如果下面没有内容，不需要转印
+            if (_Cur->next.empty()) {
+                return;
+            }
+
+            for (size_t i = 0, end = _Cur->next.size() - 1; i < end; ++i) {
+                _Self(_Self, _Cur->next[i].get());
+                desc << " " << NodeTypeMapping[static_cast<size_t>(_Cur->t)] << " ";
+            }
+            _Self(_Self, _Cur->next.back().get());
+
+        } break;
+        default:
+            desc << NodeTypeMapping[static_cast<size_t>(_Cur->t)] << RelationNameMapping[static_cast<size_t>(_Cur->r)];
+            if (_Cur->r == Require::Relation::Between) {
+                desc << " 从 " << _Cur->range.first << " 到 " << _Cur->range.second;
+            }
+            else {
+                desc << _Cur->range.first;
+            }
+            break;
+        }
+    };
+
+    desc << "这个作业有如下几个需求" << std::endl;
+    for (size_t i = 0; i < m_data.requirements.size(); ++i) {
+        auto& r = m_data.requirements[i];
+        desc << "第" << i + 1 << "个需求，对于干员或者干员组（" << r.name << "）," << std::endl;
+        funcDumpNode(funcDumpNode, &r.top);
+        desc << std::endl;
+        if (!r.tips.empty()) {
+            desc << "还需要注意: " << std::endl;
+            desc << r.tips << std::endl;
+        }
+    }
+
+    return desc.str();
+}
+
 void asst::CopilotConfig::clear()
 {
     m_data = decltype(m_data)();
@@ -54,6 +124,7 @@ bool asst::CopilotConfig::parse(const json::value& json)
     m_data.info = parse_basic_info(json);
     m_data.groups = parse_groups(json);
     m_data.actions = parse_actions(json);
+    m_data.requirements = parse_requires(json);
 
     return true;
 }
@@ -504,6 +575,196 @@ std::vector<asst::battle::copilot::ActionPtr> asst::CopilotConfig::parse_actions
     }
 
     return actions_list;
+}
+
+void asst::CopilotConfig::parse_require_node(const json::value& json, asst::battle::copilot::Require::Node* _Node)
+{
+    LogTraceFunction;
+
+    using Require = asst::battle::copilot::Require;
+
+    static const std::unordered_map<std::string, Require::NodeType> NodeTypeMapping = {
+        { "Not", Require::NodeType::Not },
+        { "not", Require::NodeType::Not },
+        { "NOT", Require::NodeType::Not },
+        { "不要", Require::NodeType::Not },
+
+        { "And", Require::NodeType::And },
+        { "and", Require::NodeType::And },
+        { "AND", Require::NodeType::And },
+        { "并且", Require::NodeType::And },
+
+        { "Or", Require::NodeType::Or },
+        { "or", Require::NodeType::Or },
+        { "OR", Require::NodeType::Or },
+        { "或者", Require::NodeType::Or },
+
+        { "Protentiality", Require::NodeType::Protentiality },
+        { "protentiality", Require::NodeType::Protentiality },
+        { "潜能", Require::NodeType::Protentiality },
+
+        { "Elite", Require::NodeType::Elite },
+        { "elite", Require::NodeType::Elite },
+        { "精英化", Require::NodeType::Elite },
+
+        { "Level", Require::NodeType::Level },
+        { "level", Require::NodeType::Level },
+        { "等级", Require::NodeType::Level },
+
+        { "Skill", Require::NodeType::Skill },
+        { "skill", Require::NodeType::Skill },
+        { "技能", Require::NodeType::Skill },
+
+        { "SkillLevel", Require::NodeType::Skill_level },
+        { "skill_level", Require::NodeType::Skill_level },
+        { "技能等级", Require::NodeType::Skill_level },
+
+        { "Module", Require::NodeType::Module },
+        { "module", Require::NodeType::Module },
+        { "模组", Require::NodeType::Module },
+
+        { "Trust", Require::NodeType::Trust },
+        { "trust", Require::NodeType::Trust },
+        { "信赖", Require::NodeType::Trust },
+
+        { "Healthy", Require::NodeType::Healthy },
+        { "healthy", Require::NodeType::Healthy },
+        { "血量上限", Require::NodeType::Healthy },
+
+        { "Attack", Require::NodeType::Attack },
+        { "attack", Require::NodeType::Attack },
+        { "攻击", Require::NodeType::Attack },
+
+        { "Defence", Require::NodeType::Defence },
+        { "defence", Require::NodeType::Defence },
+        { "防御", Require::NodeType::Defence },
+    };
+
+    static const std::unordered_map<std::string, Require::Relation> RelationMapping = {
+        { "Equal", Require::Relation::EqualTo },
+        { "Equalto", Require::Relation::EqualTo },
+        { "eq", Require::Relation::EqualTo },
+        { "EQ", Require::Relation::EqualTo },
+        { "等于", Require::Relation::EqualTo },
+
+        { "NotEqual", Require::Relation::NotEqual },
+        { "NotEqual", Require::Relation::NotEqual },
+        { "neq", Require::Relation::NotEqual },
+        { "NEQ", Require::Relation::NotEqual },
+        { "不等于", Require::Relation::NotEqual },
+
+        { "Greater", Require::Relation::Greater },
+        { "greater", Require::Relation::Greater },
+        { "GREATER", Require::Relation::Greater },
+        { "gr", Require::Relation::Greater },
+        { "GR", Require::Relation::Greater },
+        { "多于", Require::Relation::Greater },
+        { "大于", Require::Relation::Greater },
+
+        { "GreaterThan", Require::Relation::GreaterThan },
+        { "greater_than", Require::Relation::GreaterThan },
+        { "GREATER_THAN", Require::Relation::GreaterThan },
+        { "gt", Require::Relation::GreaterThan },
+        { "GT", Require::Relation::GreaterThan },
+        { "大于等于", Require::Relation::GreaterThan },
+
+        { "Less", Require::Relation::Less },
+        { "less", Require::Relation::Less },
+        { "LESS", Require::Relation::Less },
+        { "le", Require::Relation::Less },
+        { "LE", Require::Relation::Less },
+        { "少于", Require::Relation::Less },
+        { "小于", Require::Relation::Less },
+
+        { "LessThan", Require::Relation::LessThan },
+        { "less_than", Require::Relation::LessThan },
+        { "LESS_THAN", Require::Relation::LessThan },
+        { "lt", Require::Relation::LessThan },
+        { "LT", Require::Relation::LessThan },
+        { "小于等于", Require::Relation::LessThan },
+
+        { "Between", Require::Relation::Between },
+        { "between", Require::Relation::Between },
+        { "BETWEEM", Require::Relation::Between },
+        { "bt", Require::Relation::Between },
+        { "BT", Require::Relation::Between },
+        { "范围", Require::Relation::Between },
+    };
+
+    _Node->t = NodeTypeMapping.at(json.at("type").as_string());
+    switch (_Node->t) {
+    case Require::NodeType::Not: {
+        auto p = Require::Node::create();
+        parse_require_node(json.at("next"), p.get());
+        _Node->next.emplace_back(p);
+    } break;
+    case Require::NodeType::And:
+    case Require::NodeType::Or: {
+        for (auto& n : json.at("next").as_array()) {
+            auto p = Require::Node::create();
+            parse_require_node(n, p.get());
+            _Node->next.emplace_back(p);
+        }
+    } break;
+    case Require::NodeType::Protentiality:
+    case Require::NodeType::Elite:
+    case Require::NodeType::Level:
+    case Require::NodeType::Skill:
+    case Require::NodeType::Skill_level:
+    case Require::NodeType::Module:
+    case Require::NodeType::Trust:
+    case Require::NodeType::Healthy:
+    case Require::NodeType::Attack:
+    case Require::NodeType::Defence: {
+        _Node->r = RelationMapping.at(json.at("relation").as_string());
+        if (auto tBound = json.find("bound")) {
+            _Node->range.first = tBound.value().as_integer();
+        }
+        else if (auto tRange = json.find("range")) {
+            auto arr = tRange.value().as_array();
+            _Node->range.first = arr[0].as_integer();
+            _Node->range.second = arr[1].as_integer();
+        }
+    } break;
+    default:
+        break;
+    }
+}
+
+bool asst::CopilotConfig::parse_require(const json::value& json, asst::battle::copilot::Require* _Req)
+try {
+    LogTraceFunction;
+
+    using Require = asst::battle::copilot::Require;
+
+    _Req->name = json.at("name").as_string();
+    _Req->tips = json.get("tips", std::string());
+
+    parse_require_node(json.at("need"), &_Req->top);
+
+    return true;
+}
+catch (std::out_of_range const& _Ex) {
+    Log.warn("failed to parse requires with ", _Ex.what());
+    return false;
+}
+
+std::vector<asst::battle::copilot::Require> asst::CopilotConfig::parse_requires(const json::value& json)
+{
+    LogTraceFunction;
+
+    std::vector<battle::copilot::Require> requires_list;
+
+    for (const auto& action_info : json.at("requires").as_array()) {
+        battle::copilot::Require r;
+        if (!parse_require(action_info, &r)) {
+            continue;
+        }
+
+        requires_list.emplace_back(std::move(r));
+    }
+
+    return requires_list;
 }
 
 asst::battle::RoleCounts asst::CopilotConfig::parse_role_counts(const json::value& json)
