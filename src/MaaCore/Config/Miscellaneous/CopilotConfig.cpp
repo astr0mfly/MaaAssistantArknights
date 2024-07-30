@@ -47,12 +47,12 @@ auto asst::CopilotConfig::dump_requires() const -> std::string
     }
 
     static const std::array<std::string, static_cast<size_t>(Require::NodeType::Butt)> NodeTypeMapping = {
-        "初始", "不要",     "或者", "并且", "潜能",     "精英", "等级",
-        "技能", "技能等级", "模组", "信赖", "血量上限", "攻击", "防御"
+        "初始", "不要",     "或者", "并且",   "潜能",     "精英",   "等级",
+        "技能", "技能等级", "模组", "信赖度", "血量上限", "攻击力", "防御力"
     };
 
     static const std::array<std::string, static_cast<size_t>(Require::Relation::Butt)> RelationNameMapping = {
-        "等于", "不等于", "大于", "大于等于", "小于", "小于等于", "范围是"
+        "等于", "不等于", "大于", "大于等于", "小于", "小于等于", "的范围是", "是", "像是"
     };
 
     std::ostringstream desc(std::ios::app);
@@ -85,12 +85,20 @@ auto asst::CopilotConfig::dump_requires() const -> std::string
         } break;
         default:
             desc << NodeTypeMapping[static_cast<size_t>(_Cur->t)] << RelationNameMapping[static_cast<size_t>(_Cur->r)];
-            if (_Cur->r == Require::Relation::Between) {
+
+            switch (_Cur->r) {
+            case Require::Relation::Between: {
                 desc << " 从 " << _Cur->range.first << " 到 " << _Cur->range.second;
-            }
-            else {
+            } break;
+            case Require::Relation::Is:
+            case Require::Relation::Like: {
+                desc << _Cur->code;
+            } break;
+            default:
                 desc << _Cur->range.first;
+                break;
             }
+
             break;
         }
     };
@@ -481,7 +489,9 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
 
         point.target_code = action_info.at("target_code").as_string();
 
-        point.mode = TriggerInfo::loadCategoryFrom(action_info.at("mode").as_string());
+        if (auto t = action_info.find("mode")) {
+            point.mode = TriggerInfo::loadCategoryFrom(t.value().as_string());
+        }
         switch (point.mode) {
         case TriggerInfo::Category::Any:
         case TriggerInfo::Category::All:
@@ -689,6 +699,17 @@ void asst::CopilotConfig::parse_require_node(const json::value& json, asst::batt
         { "bt", Require::Relation::Between },
         { "BT", Require::Relation::Between },
         { "范围", Require::Relation::Between },
+
+        { "Is", Require::Relation::Is },
+        { "is", Require::Relation::Is },
+        { "IS", Require::Relation::Is },
+        { "是", Require::Relation::Is },
+
+        { "Like", Require::Relation::Like },
+        { "like", Require::Relation::Like },
+        { "LIKE", Require::Relation::Like },
+        { "比如是", Require::Relation::Like },
+        { "像是", Require::Relation::Like },
     };
 
     _Node->t = NodeTypeMapping.at(json.at("type").as_string());

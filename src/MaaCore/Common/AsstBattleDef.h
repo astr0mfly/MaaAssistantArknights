@@ -450,6 +450,8 @@ struct Require
         Less,
         LessThan,
         Between,
+        Is,
+        Like,
 
         Butt
     };
@@ -461,6 +463,7 @@ struct Require
         NodeType t = NodeType::None;
         Relation r = Relation::GreaterThan;
         std::pair<int, int> range; // 这里是用来表述数据的，如果是单值取第一个，如果是范围值可以用两个
+        std::string code;      // 用来存储一些字符数据， 当关系是Is/Like时选用
 
         std::vector<ptr> next; // 表示跟其他描述之间的关联关系
 
