@@ -1202,7 +1202,7 @@ bool asst::BattleProcessTask::check_point_all(const battle::copilot::PointInfo& 
     }
 
     if (_Current.range.first.interval != 0 || _Current.range.second.interval != 0) {
-        auto diff = std::chrono::duration_cast<std::chrono::microseconds>(now.tNow - target.tNow).count();
+        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now.tNow - target.tNow).count();
         if ((_Current.range.first.interval <= diff) && (diff <= _Current.range.second.interval)) {
             ;
         }
