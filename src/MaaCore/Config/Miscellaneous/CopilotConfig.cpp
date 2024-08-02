@@ -201,6 +201,7 @@ TriggerInfo asst::CopilotConfig::parse_trigger(const json::value& json)
     trigger.cost_changes = json.get("cost_changes", TriggerInfo::DEACTIVE_COST_CHANGES);
     trigger.cooling = json.get("cooling", TriggerInfo::DEACTIVE_COOLING);
     trigger.count = json.get("count", TriggerInfo::DEACTIVE_COUNT);
+    trigger.timeout = json.get("timeout", TriggerInfo::DEACTIVE_TIMEOUT);
 
     if (auto category = json.find("category")) {
         trigger.category = TriggerInfo::loadCategoryFrom(category.value().as_string());
@@ -336,14 +337,27 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
     action.point_code = action_info.get("point_code", std::string());
 
     // 解析动作触发信息
-    action.trigger = parse_trigger(action_info);
+    // 为了让action更加精简，可以把触发器选项放到 "trigger" 中
+    // 同样地，为了保持兼容性，触发器条件可以放在第一级
+    if (auto t = action_info.find("trigger")) {
+        action.trigger = parse_trigger(t.value());
+    }
+    else {
+        action.trigger = parse_trigger(action_info);
+    }
+
+    // 在每个动作进行等待时，如果等待超时，这里可以对命令过程中的特殊行为进行捕获
+    // 这里先设定了一个超时异常之后的行动
+    if (auto tExcept = action_info.find("except_action")) {
+        if (auto tTimeout = tExcept.value().find("timeout")) {
+            action.except_actions["timeout"] = parse_actions_ptr(tTimeout.value());
+        }
+    }
 
     // 解析前置条件满足之后的前后时延
     action.delay.pre_delay = action_info.get("pre_delay", 0);
     auto post_delay_opt = action_info.find<int>("post_delay");
     action.delay.post_delay = post_delay_opt ? *post_delay_opt : action_info.get("rear_delay", 0);
-    // 历史遗留字段，兼容一下
-    action.delay.time_out = action_info.get("timeout", INT_MAX);
 
     // 解析行动的相关附加文本
     action.text.doc = action_info.get("doc", std::string());
@@ -480,12 +494,15 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
 
         // 可选字段
         if (auto t = action_info.find("candidate_actions")) {
-            until.candidate = parse_actions_ptr(t.value());
+            until.candidate_actions = parse_actions_ptr(t.value());
+        }
+
+        if (auto t = action_info.find("overflow_actions")) {
+            until.overflow_actions = parse_actions_ptr(t.value());
         }
     } break;
-    case ActionType::SyncPoint:
-    case ActionType::CheckPoint: {
-        auto& point = action.payload.emplace<PointInfo>();
+    case ActionType::SyncPoint: {
+        auto& point = action.payload.emplace<SyncPointInfo>();
 
         point.target_code = action_info.at("target_code").as_string();
 
@@ -531,10 +548,59 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
             point.then_actions = parse_actions_ptr(t.value());
         }
 
-        if (action.type == ActionType::CheckPoint) {
-            if (auto t = action_info.find("else_actions")) {
-                point.else_actions = parse_actions_ptr(t.value());
-            }
+        if (auto t = action_info.find("timeout_actions")) {
+            point.timeout_actions = parse_actions_ptr(t.value());
+        }
+    } break;
+    case ActionType::CheckPoint: {
+        auto& point = action.payload.emplace<CheckPointInfo>();
+
+        point.target_code = action_info.at("target_code").as_string();
+
+        if (auto t = action_info.find("mode")) {
+            point.mode = TriggerInfo::loadCategoryFrom(t.value().as_string());
+        }
+        switch (point.mode) {
+        case TriggerInfo::Category::Any:
+        case TriggerInfo::Category::All:
+        case TriggerInfo::Category::Not:
+        case TriggerInfo::Category::Succ:
+            break;
+        default:
+            point.mode = TriggerInfo::Category::All;
+            break;
+        }
+
+        if (auto t = action_info.find("kill_range")) {
+            auto range = t.value().as_array();
+            point.range.first.kills = range[0].as_integer();
+            point.range.second.kills = range[1].as_integer();
+        }
+
+        if (auto t = action_info.find("cost_range")) {
+            auto range = t.value().as_array();
+            point.range.first.cost = range[0].as_integer();
+            point.range.second.cost = range[1].as_integer();
+        }
+
+        if (auto t = action_info.find("cooling_range")) {
+            auto range = t.value().as_array();
+            point.range.first.cooling_count = range[0].as_integer();
+            point.range.second.cooling_count = range[1].as_integer();
+        }
+
+        if (auto t = action_info.find("time_range")) {
+            auto range = t.value().as_array();
+            point.range.first.interval = range[0].as_integer();
+            point.range.second.interval = range[1].as_integer();
+        }
+
+        if (auto t = action_info.find("then_actions")) {
+            point.then_actions = parse_actions_ptr(t.value());
+        }
+
+        if (auto t = action_info.find("else_actions")) {
+            point.else_actions = parse_actions_ptr(t.value());
         }
 
     } break;

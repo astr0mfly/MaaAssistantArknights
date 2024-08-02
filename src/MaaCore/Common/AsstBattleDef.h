@@ -210,6 +210,7 @@ struct TriggerInfo
     static constexpr int DEACTIVE_COST_CHANGES = 0; // 费用变更未设置
     static constexpr int64_t DEACTIVE_COOLING = -1; // 干员冷却数未设置
     static constexpr int DEACTIVE_COUNT = -1;       // 循环计数
+    static constexpr int DEACTIVE_TIMEOUT = -1;     // 等待超时的设置
 
     enum class Category
     {
@@ -227,8 +228,9 @@ struct TriggerInfo
     int cost_changes = DEACTIVE_COST_CHANGES; // 费用变化条件
     int64_t cooling = DEACTIVE_COOLING;       // 冷却中的干员条件
     int count = DEACTIVE_COUNT;               // 计数条件，不做变化，记录初始值
+    int timeout = DEACTIVE_TIMEOUT;
 
-    mutable int counter = 0;                  // 计数器
+    mutable int counter = 0; // 计数器
 
     // 触发器是否被激活
     bool active() const noexcept { return category != Category::None; }
@@ -318,32 +320,46 @@ struct CheckInfo
 struct UntilInfo
 {
     TriggerInfo::Category mode = TriggerInfo::Category::All; // all 全部命令执行完毕后才结束， any 只要有一个执行就结束
-    std::vector<ActionPtr> candidate;                        // 备用的命令序列
+    std::vector<ActionPtr> candidate_actions; // 备用的命令序列
+    std::vector<ActionPtr> overflow_actions;  // 计数溢出的命令序列
 };
 
 // 定义point操作需要的信息
+struct SnapShot
+{
+    int kills = TriggerInfo::DEACTIVE_KILLS;
+    int cost = TriggerInfo::DEACTIVE_COST;
+    int64_t cooling_count = TriggerInfo::DEACTIVE_COOLING;
+    int interval = 0;
+
+    std::chrono::steady_clock::time_point tNow;
+
+    SnapShot() {}
+};
+
 struct PointInfo
 {
-    struct SnapShot
-    {
-        int kills = TriggerInfo::DEACTIVE_KILLS;
-        int cost = TriggerInfo::DEACTIVE_COST;
-        int64_t cooling_count = TriggerInfo::DEACTIVE_COOLING;
-        int interval = 0;
-
-        std::chrono::steady_clock::time_point tNow;
-
-        SnapShot() {}
-    };
-
     std::string target_code;
     TriggerInfo::Category mode = TriggerInfo::Category::All;
     std::pair<SnapShot, SnapShot> range;
+};
 
+struct SyncPointInfo : public PointInfo
+{
+    int TimeOut = TriggerInfo::DEACTIVE_TIMEOUT;
+
+    std::vector<ActionPtr> then_actions;    // 当条件满足时执行
+    std::vector<ActionPtr> timeout_actions; // 等待超时满足时执行
+
+    SyncPointInfo() {}
+};
+
+struct CheckPointInfo : public PointInfo
+{
     std::vector<ActionPtr> then_actions; // 当条件满足时执行
     std::vector<ActionPtr> else_actions; // 当条件不满足时执行
 
-    PointInfo() {}
+    CheckPointInfo() {}
 };
 
 struct CheckIfStartOverInfo
@@ -376,6 +392,7 @@ struct Action
     TriggerInfo trigger;    // 必须拥有，表示动作触发时的条件信息
     DelayInfo delay;        // 延时信息
     TextInfo text;          //  表示文本输出，用于命令提示亦或是调试输出
+    std::map<std::string, std::vector<ActionPtr>> except_actions;
 
     // 为了便于内存管理，使用variant管理额外的action信息，通过type来进行还原
     // AvatarInfo 表示干员或辅助装置的部署、撤退、技能策略更改等
@@ -392,7 +409,8 @@ struct Action
         LoopInfo,
         CheckInfo,
         UntilInfo,
-        PointInfo>
+        SyncPointInfo,
+        CheckPointInfo>
         payload; // 信息载荷
 
     // 是否携带干员信息

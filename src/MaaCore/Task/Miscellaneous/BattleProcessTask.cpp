@@ -331,8 +331,8 @@ END_LOOP:;
                 action.trigger.activeCounter();
 
                 // 只要其中一个命令执行成功就退出
-                size_t i = idx++ % info.candidate.size();
-                if (do_action_async(*info.candidate[i], i)) {
+                size_t i = idx++ % info.candidate_actions.size();
+                if (do_action_async(*info.candidate_actions[i], i)) {
                     ret = true;
                     break;
                 }
@@ -350,7 +350,7 @@ END_LOOP:;
             size_t idx = 0;
 
             // 全部成功则完成循环
-            while (setSucc.size() != info.candidate.size()) {
+            while (setSucc.size() != info.candidate_actions.size()) {
                 // 到达循环极限，退出
                 if (action.trigger.counter == action.trigger.count) {
                     ret = false;
@@ -360,14 +360,14 @@ END_LOOP:;
                 action.trigger.activeCounter();
 
                 // 判断是否已经执行成功，如果已经成功就判断下一个
-                size_t i = idx++ % info.candidate.size();
-                if (setSucc.find(info.candidate[i]) != setSucc.end()) {
+                size_t i = idx++ % info.candidate_actions.size();
+                if (setSucc.find(info.candidate_actions[i]) != setSucc.end()) {
                     continue;
                 }
 
                 // 记录成功完成的动作
-                if (do_action_async(*info.candidate[i], i)) {
-                    setSucc.emplace(info.candidate[i]);
+                if (do_action_async(*info.candidate_actions[i], i)) {
+                    setSucc.emplace(info.candidate_actions[i]);
                 }
 
                 if (need_exit() || !m_in_battle) {
@@ -418,7 +418,7 @@ END_LOOP:;
         ret = true; // 锚点保存动作由于携带锚点编码，已经在前面进行存储
         break;
     case ActionType::SyncPoint: {
-        auto& info = action.getPayload<PointInfo>();
+        auto& info = action.getPayload<SyncPointInfo>();
 
         // 目标编码不匹配，退出
         if (!find_snap_shot(info.target_code)) {
@@ -458,7 +458,7 @@ END_LOOP:;
         ret = (i == info.then_actions.size());
     } break;
     case ActionType::CheckPoint: {
-        auto& info = action.getPayload<PointInfo>();
+        auto& info = action.getPayload<CheckPointInfo>();
 
         // 目标编码不匹配，退出
         if (!find_snap_shot(info.target_code)) {
@@ -1278,7 +1278,7 @@ void asst::BattleProcessTask::sleep_and_do_strategy(unsigned millisecond)
     }
 }
 
-auto asst::BattleProcessTask::gen_snap_shot() -> battle::copilot::PointInfo::SnapShot
+auto asst::BattleProcessTask::gen_snap_shot() -> battle::copilot::SnapShot
 {
     cv::Mat image;
 
@@ -1286,7 +1286,7 @@ auto asst::BattleProcessTask::gen_snap_shot() -> battle::copilot::PointInfo::Sna
 
     update_cost(image);
 
-    battle::copilot::PointInfo::SnapShot shot;
+    battle::copilot::SnapShot shot;
 
     shot.cost = m_cost;
 
@@ -1319,8 +1319,7 @@ void asst::BattleProcessTask::save_snap_shot(const std::string& code)
     m_snap_shots[code] = gen_snap_shot();
 }
 
-auto asst::BattleProcessTask::get_snap_shot(const std::string& code) const noexcept
-    -> battle::copilot::PointInfo::SnapShot const&
+auto asst::BattleProcessTask::get_snap_shot(const std::string& code) const noexcept -> battle::copilot::SnapShot const&
 {
     return m_snap_shots.at(code);
 }

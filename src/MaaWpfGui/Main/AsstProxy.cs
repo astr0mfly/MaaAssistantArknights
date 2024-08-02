@@ -1384,6 +1384,10 @@ namespace MaaWpfGui.Main
                     Instances.CopilotViewModel.AddLog(LocalizationHelper.GetString("BattleFormationSelected") + subTaskDetails!["selected"]);
                     break;
 
+                case "RequirementReport":
+                    Instances.CopilotViewModel.AddLog(LocalizationHelper.GetString("RequirementReport") + "\n" + JsonConvert.SerializeObject(subTaskDetails!["report"]).Replace("\\n", "\n"));
+                    break;
+
                 case "CopilotAction":
                     {
                         var doc = subTaskDetails!["doc"]?.ToString();

@@ -67,16 +67,16 @@ protected:
     bool enter_bullet_time(const std::string& name, const Point& location);
     void sleep_and_do_strategy(unsigned millisecond);
 
-    auto gen_snap_shot() -> battle::copilot::PointInfo::SnapShot;
+    auto gen_snap_shot() -> battle::copilot::SnapShot;
     bool find_snap_shot(const std::string& code) const noexcept;
     void save_snap_shot(const std::string& code);
-    auto get_snap_shot(const std::string& code) const noexcept -> battle::copilot::PointInfo::SnapShot const&;
+    auto get_snap_shot(const std::string& code) const noexcept -> battle::copilot::SnapShot const&;
 
     virtual bool check_in_battle(const cv::Mat& reusable = cv::Mat(), bool weak = true) override;
 
     battle::copilot::CombatData m_combat_data;
     std::unordered_map</*group*/ std::string, /*oper*/ std::string> m_oper_in_group;
-    std::map<std::string, battle::copilot::PointInfo::SnapShot> m_snap_shots; // 在运行过程中存储的快照信息
+    std::map<std::string, battle::copilot::SnapShot> m_snap_shots; // 在运行过程中存储的快照信息
 
     bool m_in_bullet_time = false;
     bool m_need_to_wait_until_end = false;
