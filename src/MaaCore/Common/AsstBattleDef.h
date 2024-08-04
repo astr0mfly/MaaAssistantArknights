@@ -230,16 +230,27 @@ struct TriggerInfo
     int count = DEACTIVE_COUNT;               // 计数条件，不做变化，记录初始值
     int timeout = DEACTIVE_TIMEOUT;
 
-    mutable int counter = 0; // 计数器
+    mutable int m_counter = 0; // 计数器
 
-    // 触发器是否被激活
+    // @brief 触发器是否被激活, 也就是说被指定设置
     bool active() const noexcept { return category != Category::None; }
 
-    // 重置计数器
-    void resetCounter() const noexcept { counter = 0; }
+    // @brief 重置计数器
+    void reset_counter() const noexcept { m_counter = 0; }
 
-    // 激活一次计数器
-    void activeCounter() const noexcept { ++counter; }
+    // @brief 激活一次计数器
+    void active_counter() const noexcept { ++m_counter; }
+
+    // @brief 在触发等待的过程中是否超时
+    bool is_timeout(std::chrono::steady_clock::time_point const& _Base) const noexcept
+    {
+        if (timeout == DEACTIVE_TIMEOUT) {
+            return false;
+        }
+
+        using namespace std::chrono;
+        return duration_cast<milliseconds>(steady_clock::now() - _Base).count() >= timeout;
+    }
 
     static auto loadCategoryFrom(std::string const& _Str) noexcept -> Category
     {
@@ -346,7 +357,7 @@ struct PointInfo
 
 struct SyncPointInfo : public PointInfo
 {
-    int TimeOut = TriggerInfo::DEACTIVE_TIMEOUT;
+    int sync_timeout = TriggerInfo::DEACTIVE_TIMEOUT;
 
     std::vector<ActionPtr> then_actions;    // 当条件满足时执行
     std::vector<ActionPtr> timeout_actions; // 等待超时满足时执行

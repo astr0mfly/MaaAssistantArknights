@@ -432,7 +432,7 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
         auto& case_info = action.payload.emplace<CaseInfo>();
 
         // 必选字段
-        case_info.group_select = action_info.at("select").as_string();
+        case_info.group_select = action_info.get("select", std::string());
 
         // 可选字段
         if (auto t = action_info.find("dispatch_actions")) {
@@ -450,7 +450,7 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
         auto& check = action.payload.emplace<CheckInfo>();
 
         // 必选字段
-        check.condition_info = parse_trigger(action_info.at("condition"));
+        check.condition_info = parse_trigger(action_info.get("condition", "all"));
 
         if (check.condition_info.category == TriggerInfo::Category::None) {
             // 默认使用all策略，表示只有全部满足才算生效
@@ -504,7 +504,7 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
     case ActionType::SyncPoint: {
         auto& point = action.payload.emplace<SyncPointInfo>();
 
-        point.target_code = action_info.at("target_code").as_string();
+        point.target_code = action_info.get("target_code", std::string());
 
         if (auto t = action_info.find("mode")) {
             point.mode = TriggerInfo::loadCategoryFrom(t.value().as_string());
@@ -548,6 +548,8 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
             point.then_actions = parse_actions_ptr(t.value());
         }
 
+        point.sync_timeout = action_info.get("sync_timeout", TriggerInfo::DEACTIVE_TIMEOUT);
+
         if (auto t = action_info.find("timeout_actions")) {
             point.timeout_actions = parse_actions_ptr(t.value());
         }
@@ -555,7 +557,7 @@ bool asst::CopilotConfig::parse_action(const json::value& action_info, asst::bat
     case ActionType::CheckPoint: {
         auto& point = action.payload.emplace<CheckPointInfo>();
 
-        point.target_code = action_info.at("target_code").as_string();
+        point.target_code = action_info.get("target_code", std::string());
 
         if (auto t = action_info.find("mode")) {
             point.mode = TriggerInfo::loadCategoryFrom(t.value().as_string());

@@ -2,6 +2,7 @@
 
 #include "Utils/Ranges.hpp"
 #include <chrono>
+#include <format>
 #include <future>
 #include <thread>
 
@@ -23,6 +24,12 @@
 
 using namespace asst::battle;
 using namespace asst::battle::copilot;
+
+class timeout_error : public std::runtime_error
+{
+public:
+    using runtime_error::runtime_error;
+};
 
 asst::BattleProcessTask::BattleProcessTask(const AsstCallback& callback, Assistant* inst, std::string_view task_chain) :
     AbstractTask(callback, inst, task_chain),
@@ -172,6 +179,8 @@ bool asst::BattleProcessTask::to_group()
 
 bool asst::BattleProcessTask::do_action(const battle::copilot::Action& action, size_t index)
 {
+    using namespace std::chrono;
+
     if (action.delay.pre_delay > 0) {
         sleep_and_do_strategy(action.delay.pre_delay);
         // 等待之后画面可能会变化，更新下干员信息
@@ -258,11 +267,11 @@ bool asst::BattleProcessTask::do_action(const battle::copilot::Action& action, s
         auto& info = action.getPayload<LoopInfo>();
 
         // 假设被设置了自然数才赋值
-        info.end_info.resetCounter();
+        info.end_info.reset_counter();
 
         while (!check_condition(info.end_info)) {
             // 需要维护counter
-            info.end_info.activeCounter();
+            info.end_info.active_counter();
 
             // 执行循环体
             for (size_t i = 0; i < info.loop_actions.size(); ++i) {
@@ -317,18 +326,18 @@ END_LOOP:;
 
         // 循环遍历携带的所有子动作，只要成功一个才退出
         // 防止死循环，添加loop_limit参数来限制循环
-        action.trigger.resetCounter();
+        action.trigger.reset_counter();
         switch (info.mode) {
         case TriggerInfo::Category::Any: {
             size_t idx = 0;
             while (ret == false) {
                 // 到达循环极限，退出
-                if (action.trigger.counter == action.trigger.count) {
+                if (action.trigger.m_counter == action.trigger.count) {
                     ret = false;
                     break;
                 }
 
-                action.trigger.activeCounter();
+                action.trigger.active_counter();
 
                 // 只要其中一个命令执行成功就退出
                 size_t i = idx++ % info.candidate_actions.size();
@@ -352,12 +361,12 @@ END_LOOP:;
             // 全部成功则完成循环
             while (setSucc.size() != info.candidate_actions.size()) {
                 // 到达循环极限，退出
-                if (action.trigger.counter == action.trigger.count) {
+                if (action.trigger.m_counter == action.trigger.count) {
                     ret = false;
                     break;
                 }
 
-                action.trigger.activeCounter();
+                action.trigger.active_counter();
 
                 // 判断是否已经执行成功，如果已经成功就判断下一个
                 size_t i = idx++ % info.candidate_actions.size();
@@ -426,36 +435,62 @@ END_LOOP:;
             break;
         }
 
-        thread_local auto prev_frame_time = std::chrono::steady_clock::time_point {};
+        static const auto start = steady_clock::now();
         static const auto min_frame_interval =
             std::chrono::milliseconds(Config.get_options().copilot_fight_screencap_interval);
 
+        bool timeout = false;
+
         do {
-            const auto now = std::chrono::steady_clock::now();
+            auto begin = std::chrono::steady_clock::now();
 
             if (check_point(info)) {
                 break;
             }
 
             // prevent our program from consuming too much CPU
-            if (prev_frame_time > now - min_frame_interval) [[unlikely]] {
+            auto now = std::chrono::steady_clock::now();
+            if (info.sync_timeout != TriggerInfo::DEACTIVE_TIMEOUT &&
+                duration_cast<milliseconds>(now - start).count() >= info.sync_timeout) {
+                timeout = true;
+                break;
+            }
+
+            if (min_frame_interval > now - begin) [[unlikely]] {
                 Log.debug("Sleeping for framerate limit");
-                std::this_thread::sleep_for(min_frame_interval - (now - prev_frame_time));
+                std::this_thread::sleep_for(min_frame_interval - (now - begin));
             }
         } while (!need_exit() && m_in_battle);
 
-        size_t i = 0;
-        for (; i < info.then_actions.size(); ++i) {
-            if (!do_action_sync(*info.then_actions[i], i)) {
-                break;
+        if (timeout) {
+            size_t i = 0;
+            for (; i < info.timeout_actions.size(); ++i) {
+                if (!do_action_sync(*info.timeout_actions[i], i)) {
+                    break;
+                }
+
+                if (need_exit() || !m_in_battle) {
+                    break;
+                }
             }
 
-            if (need_exit() || !m_in_battle) {
-                break;
+            ret = (i == info.timeout_actions.size());
+        }
+        else {
+            size_t i = 0;
+            for (; i < info.then_actions.size(); ++i) {
+                if (!do_action_sync(*info.then_actions[i], i)) {
+                    break;
+                }
+
+                if (need_exit() || !m_in_battle) {
+                    break;
+                }
             }
+
+            ret = (i == info.then_actions.size());
         }
 
-        ret = (i == info.then_actions.size());
     } break;
     case ActionType::CheckPoint: {
         auto& info = action.getPayload<CheckPointInfo>();
@@ -521,27 +556,41 @@ bool asst::BattleProcessTask::do_action_sync(const battle::copilot::Action& acti
         std::this_thread::sleep_for(min_frame_interval - (now - prev_frame_time));
     }
 
-    // 所有被设置的触发器都满足
-    switch (action.trigger.category) {
-    case TriggerInfo::Category::Succ: // 默认成功，跳过条件阶段，什么都不用做
-        break;
-    case TriggerInfo::Category::Any: {
-        if (!wait_condition_any(action)) {
-            return false;
+    try {
+        // 所有被设置的触发器都满足
+        switch (action.trigger.category) {
+        case TriggerInfo::Category::Succ: // 默认成功，跳过条件阶段，什么都不用做
+            break;
+        case TriggerInfo::Category::Any: {
+            if (!wait_condition_any(action)) {
+                return false;
+            }
+        } break;
+        case TriggerInfo::Category::Not: {
+            if (!wait_condition_not(action)) {
+                return false;
+            }
+        } break;
+        case TriggerInfo::Category::All:
+            [[fallthrough]];
+        default: {
+            if (!wait_condition_all(action)) {
+                return false;
+            }
+        } break;
         }
-    } break;
-    case TriggerInfo::Category::Not: {
-        if (!wait_condition_not(action)) {
-            return false;
+    }
+    catch (timeout_error const& _Ex) {
+        Log.warn(_Ex.what());
+
+        bool ret = true;
+        if (auto it = action.except_actions.find("timeout"); it != action.except_actions.end()) {
+            for (size_t i = 0; i < it->second.size(); ++i) {
+                ret &= do_action_sync(*it->second[i], i);
+            }
         }
-    } break;
-    case TriggerInfo::Category::All:
-        [[fallthrough]];
-    default: {
-        if (!wait_condition_all(action)) {
-            return false;
-        }
-    } break;
+
+        return ret;
     }
 
     // 部署干员还要额外等待费用够或 CD 转好
@@ -650,6 +699,11 @@ bool asst::BattleProcessTask::wait_operator_ready(const battle::copilot::Action&
             iter != m_cur_deployment_opers.end() && iter->available) {
             break;
         }
+
+        if (!check_in_battle(image)) {
+            return false;
+        }
+
         do_strategy_and_update_image(&image);
     }
 
@@ -675,6 +729,8 @@ bool asst::BattleProcessTask::wait_condition_not(const Action& action)
 {
     cv::Mat image;
 
+    auto tStart = std::chrono::steady_clock::now();
+
     // cost_changes 被指定才进入判断，且等待直至满足
     if (action.trigger.cost_changes != TriggerInfo::DEACTIVE_COST_CHANGES) {
         update_image_if_empty(&image);
@@ -682,6 +738,10 @@ bool asst::BattleProcessTask::wait_condition_not(const Action& action)
         int pre_cost = m_cost;
 
         while (!need_exit()) {
+            if (action.trigger.is_timeout(tStart)) {
+                throw timeout_error(std::format("timeout when wait trigger at {}:{}", __FUNCTION__, __LINE__));
+            }
+
             update_cost(image);
             if (action.trigger.cost_changes != TriggerInfo::DEACTIVE_COST_CHANGES) {
                 if ((pre_cost + action.trigger.cost_changes < 0) ? (m_cost <= pre_cost + action.trigger.cost_changes)
@@ -700,9 +760,13 @@ bool asst::BattleProcessTask::wait_condition_not(const Action& action)
         }
     }
 
-    if (m_kills < action.trigger.kills) {
+    if (action.trigger.kills != TriggerInfo::DEACTIVE_KILLS) {
         update_image_if_empty(&image);
-        while (!need_exit() && m_kills < action.trigger.kills) {
+        while (!need_exit()) {
+            if (action.trigger.is_timeout(tStart)) {
+                throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+            }
+
             update_kills(image);
             if (m_kills >= action.trigger.kills) {
                 ;
@@ -721,6 +785,10 @@ bool asst::BattleProcessTask::wait_condition_not(const Action& action)
     if (action.trigger.costs != TriggerInfo::DEACTIVE_COST) {
         update_image_if_empty(&image);
         while (!need_exit()) {
+            if (action.trigger.is_timeout(tStart)) {
+                throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+            }
+
             update_cost(image);
             if (m_cost >= action.trigger.costs) {
                 ;
@@ -740,6 +808,10 @@ bool asst::BattleProcessTask::wait_condition_not(const Action& action)
     if (action.trigger.cooling > TriggerInfo::DEACTIVE_COOLING) {
         update_image_if_empty(&image);
         while (!need_exit()) {
+            if (action.trigger.is_timeout(tStart)) {
+                throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+            }
+
             if (!update_deployment(false, image)) {
                 return false;
             }
@@ -755,6 +827,10 @@ bool asst::BattleProcessTask::wait_condition_not(const Action& action)
         }
     }
 
+    if (action.trigger.is_timeout(tStart)) {
+        throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+    }
+
     return true;
 }
 
@@ -763,6 +839,8 @@ bool asst::BattleProcessTask::wait_condition_all(const Action& action)
 {
     cv::Mat image;
 
+    auto tStart = std::chrono::steady_clock::now();
+
     // cost_changes 被指定才进入判断，且等待直至满足
     if (action.trigger.cost_changes != TriggerInfo::DEACTIVE_COST_CHANGES) {
         update_image_if_empty(&image);
@@ -770,6 +848,10 @@ bool asst::BattleProcessTask::wait_condition_all(const Action& action)
         int pre_cost = m_cost;
 
         while (!need_exit()) {
+            if (action.trigger.is_timeout(tStart)) {
+                throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+            }
+
             update_cost(image);
             if (action.trigger.cost_changes != TriggerInfo::DEACTIVE_COST_CHANGES) {
                 if ((pre_cost + action.trigger.cost_changes < 0) ? (m_cost <= pre_cost + action.trigger.cost_changes)
@@ -784,9 +866,13 @@ bool asst::BattleProcessTask::wait_condition_all(const Action& action)
         }
     }
 
-    if (m_kills < action.trigger.kills) {
+    if (action.trigger.kills != TriggerInfo::DEACTIVE_KILLS) {
         update_image_if_empty(&image);
-        while (!need_exit() && m_kills < action.trigger.kills) {
+        while (!need_exit()) {
+            if (action.trigger.is_timeout(tStart)) {
+                throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+            }
+
             update_kills(image);
             if (m_kills >= action.trigger.kills) {
                 break;
@@ -801,6 +887,10 @@ bool asst::BattleProcessTask::wait_condition_all(const Action& action)
     if (action.trigger.costs != TriggerInfo::DEACTIVE_COST) {
         update_image_if_empty(&image);
         while (!need_exit()) {
+            if (action.trigger.is_timeout(tStart)) {
+                throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+            }
+
             update_cost(image);
             if (m_cost >= action.trigger.costs) {
                 break;
@@ -816,6 +906,10 @@ bool asst::BattleProcessTask::wait_condition_all(const Action& action)
     if (action.trigger.cooling > TriggerInfo::DEACTIVE_COOLING) {
         update_image_if_empty(&image);
         while (!need_exit()) {
+            if (action.trigger.is_timeout(tStart)) {
+                throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+            }
+
             if (!update_deployment(false, image)) {
                 return false;
             }
@@ -836,6 +930,8 @@ bool asst::BattleProcessTask::wait_condition_any(const Action& action)
 {
     cv::Mat image;
 
+    auto tStart = std::chrono::steady_clock::now();
+
     // 提前准备好快照，便于后续设置判断费用差距
     if (action.trigger.cost_changes != TriggerInfo::DEACTIVE_COST_CHANGES) {
         update_image_if_empty(&image);
@@ -845,6 +941,10 @@ bool asst::BattleProcessTask::wait_condition_any(const Action& action)
 
     while (!need_exit()) {
         update_image_if_empty(&image);
+
+        if (action.trigger.is_timeout(tStart)) {
+            throw timeout_error(std::format("timeout when wait trigger at {}", __FUNCTION__, __LINE__));
+        }
 
         if (action.trigger.cost_changes != TriggerInfo::DEACTIVE_COST_CHANGES) {
             update_cost(image);
@@ -935,7 +1035,7 @@ bool asst::BattleProcessTask::check_condition_not(const battle::copilot::Trigger
     }
 
     if (_Trigger.count != TriggerInfo::DEACTIVE_COUNT) {
-        if (_Trigger.counter == _Trigger.count) {
+        if (_Trigger.m_counter == _Trigger.count) {
             return false;
         }
     }
@@ -1004,7 +1104,7 @@ bool asst::BattleProcessTask::check_condition_all(const battle::copilot::Trigger
     }
 
     if (_Trigger.count != TriggerInfo::DEACTIVE_COUNT) {
-        if (_Trigger.counter == _Trigger.count) {
+        if (_Trigger.m_counter == _Trigger.count) {
             ;
         }
         else {
@@ -1062,7 +1162,7 @@ bool asst::BattleProcessTask::check_condition_any(const battle::copilot::Trigger
     }
 
     if (_Trigger.count != TriggerInfo::DEACTIVE_COUNT) {
-        if (_Trigger.counter == _Trigger.count) {
+        if (_Trigger.m_counter == _Trigger.count) {
             return true;
         }
     }
