@@ -1,5 +1,7 @@
 #include "CopilotConfig.h"
 
+#include <regex>
+
 #include <meojson/json.hpp>
 
 #include "TilePack.h"
@@ -8,6 +10,584 @@
 
 using namespace asst::battle;
 using namespace asst::battle::copilot;
+
+namespace requirement_expression
+{
+
+bool starts_with(const std::wstring& str, const std::wstring& prefix)
+{
+    if (str.length() < prefix.length()) {
+        // 如果str的长度小于prefix的长度，则str不可能以prefix开始
+        return false;
+    }
+
+    return str.substr(0, prefix.length()) == prefix;
+}
+
+class Variable
+{
+public:
+    Variable(int _LineSeq, std::wstring _Name) :
+        m_iLineNum__(_LineSeq),
+        m_strName__(_Name)
+    {
+    }
+
+    friend std::wistream& operator>>(std::wistream& in, Variable& a);
+    friend std::wostream& operator<<(std::wostream& os, Variable& a);
+
+    int m_iLineNum__;
+    std::wstring m_strName__;
+};
+
+inline std::wistream& operator>>(std::wistream& in, Variable& a)
+{
+    in >> a.m_iLineNum__ >> a.m_strName__;
+    return in;
+}
+
+inline std::wostream& operator<<(std::wostream& os, Variable& a)
+{
+    os << typeid(a).name() << std::endl << a.m_iLineNum__ << std::endl << a.m_strName__ << std::endl;
+    return os;
+}
+
+// 语法基类
+class Statement
+{
+public:
+    using ptr = std::shared_ptr<Statement>;
+    virtual ~Statement() = default;
+};
+
+// 源码树
+class SourceCode
+{
+public:
+    SourceCode() = default;
+
+    SourceCode(int _LineNum, std::vector<Statement::ptr> _States) :
+        m_iLineNum__(_LineNum),
+        m_vecStatements__(_States)
+    {
+    }
+
+    friend std::istream& operator>>(std::istream& in, SourceCode& a);
+    friend std::ostream& operator<<(std::ostream& os, SourceCode& a);
+
+    int m_iLineNum__;
+    std::vector<Statement::ptr> m_vecStatements__;
+};
+
+inline std::istream& operator>>(std::istream& in, SourceCode& a)
+{
+    in >> a.m_iLineNum__;
+    return in;
+}
+
+inline std::ostream& operator<<(std::ostream& os, SourceCode& a)
+{
+    os << typeid(a).name() << std::endl << a.m_iLineNum__ << std::endl;
+    return os;
+}
+
+// 词法解析
+class lexer_exception : public std::exception
+{
+public:
+    using exception::exception;
+};
+
+enum class token_type
+{
+    E_TOKEN_EOF = 0,     // 文件的结束符
+    E_TOKEN_LEFT_PAREN,  // 左括号
+    E_TOKEN_RIGHT_PAREN, // 右括号
+    E_TOKEN_EQUAL,
+    E_TOKEN_NO_EQUAL,
+    E_TOKEN_GREAT,
+    E_TOKEN_GREAT_THAN,
+    E_TOKEN_LESS,
+    E_TOKEN_LESS_THAN,
+    E_TOKEN_QUOTE,    // 单引号
+    E_TOKEN_DUOQUOTE, // 双引号
+    E_TOKEN_NAME,
+    E_TOKEN_IGNORED,
+
+    E_TOKEN_BUTT
+};
+
+class token_info
+{
+public:
+    token_info() :
+        m_iLineNum__(-1),
+        m_enTypeToken__(token_type::E_TOKEN_BUTT)
+    {
+    }
+
+    token_info(int _line, token_type _type, std::string _token) :
+        m_iLineNum__(_line),
+        m_enTypeToken__(_type),
+        m_strToken__(_token)
+    {
+    }
+
+    token_info(token_info&& _Other) noexcept :
+        m_iLineNum__(_Other.m_iLineNum__),
+        m_enTypeToken__(_Other.m_enTypeToken__),
+        m_strToken__(std::move(_Other.m_strToken__))
+    {
+        _Other.reset();
+    }
+
+    token_info(token_info const& _Other) :
+        m_iLineNum__(_Other.m_iLineNum__),
+        m_enTypeToken__(_Other.m_enTypeToken__),
+        m_strToken__(_Other.m_strToken__)
+    {
+    }
+
+    token_info& operator=(token_info&& _Other) noexcept
+    {
+        m_iLineNum__ = _Other.m_iLineNum__;
+        m_enTypeToken__ = _Other.m_enTypeToken__;
+        m_strToken__ = std::move(_Other.m_strToken__);
+        _Other.reset();
+
+        return *this;
+    }
+
+    token_info& operator=(token_info const& _Other)
+    {
+        if (this == &_Other) {
+            return *this;
+        }
+        m_iLineNum__ = _Other.m_iLineNum__;
+        m_enTypeToken__ = _Other.m_enTypeToken__;
+        m_strToken__ = _Other.m_strToken__;
+
+        return *this;
+    }
+
+    void show()
+    {
+        std::cout << "m_iLineNum__:" << m_iLineNum__ << " m_enTypeToken__:" << (int)m_enTypeToken__
+                  << " m_strToken__:" << m_strToken__ << std::endl;
+    }
+
+    bool empty() const { return m_iLineNum__ == -1; }
+
+    void reset()
+    {
+        m_iLineNum__ = -1;
+        m_enTypeToken__ = token_type::E_TOKEN_BUTT;
+        m_strToken__.clear();
+    }
+
+    bool matchType(token_type _Type) const { return m_enTypeToken__ == _Type; }
+
+    bool matchType(token_info&& _Rhs) const { return m_enTypeToken__ == _Rhs.m_enTypeToken__; }
+
+    bool matchType(token_info const& _Rhs) const { return m_enTypeToken__ == _Rhs.m_enTypeToken__; }
+
+    token_type type() const { return m_enTypeToken__; }
+
+    int num() const { return m_iLineNum__; }
+
+    std::string token() { return m_strToken__; }
+
+private:
+    int m_iLineNum__;
+    token_type m_enTypeToken__;
+    std::string m_strToken__;
+};
+
+class Lexer
+{
+public:
+    using String_T = std::wstring;
+
+    Lexer(String_T const& _Source) :
+        source(_Source),
+        idx_head(0)
+    {
+    }
+
+    bool nextSource(String_T const& _Prefix) const
+    {
+        if (_Prefix.empty()) {
+            return source.empty() ? true : false;
+        }
+
+        return starts_with(source, _Prefix);
+    }
+
+    bool finished() const { return idx_head >= source.size(); }
+
+    auto source_now() const -> String_T { return source.substr(idx_head); }
+
+    auto scan_pattern(std::regex&& _Pattern) -> String_T
+    {
+        std::wsmatch resMatch;
+        auto result = std::regex_search(source.substr(idx_head), resMatch, _Pattern, std::regex_constants::match_any);
+        if (!result) {
+            throw lexer_exception("returned unexpected result");
+        }
+
+        return resMatch[0];
+    }
+
+    std::wstring scanName() { return scan_pattern(std::regex("^[_a-zA-Z][_a-zA-Z0-9]*")); }
+
+    std::wstring scanIgnored() { return scan_pattern(std::regex("^[\t\n\v\f\r ]+")); }
+
+    std::string scanBeforeToken(std::string _token)
+    {
+        auto res = StringUtil::split(sourceNow(), _token);
+        if (res.empty()) {
+            throw lexer_exception("miss token");
+        }
+        m_iHead += res[0].size();
+        processNewLine(res[0]);
+        return res[0];
+    }
+
+    void processNewLine(std::wstring _Ignored)
+    {
+        std::size_t i = 0;
+        while (i < _Ignored.size()) {
+            if (_Ignored.substr(i, 2) == L"\r\n" || _Ignored.substr(i, 2) == L"\n\r") {
+                i += 2;
+                idx_cursor++;
+            }
+            else {
+                switch (_Ignored[i]) {
+                case '\r':
+                case '\n':
+                    idx_cursor++;
+                    break;
+                default:
+                    break;
+                }
+                i++;
+            }
+        }
+    }
+
+    auto get_next_token() -> token_info
+    {
+        static std::map<std::wstring, token_type> s_mapKeyWordsTbl = { { "print", token_type::E_TOKEN_PRINT } };
+
+        if (!token_next.empty()) {
+            return std::move(token_next);
+        }
+
+        if (finished()) {
+            return token_info(0, token_type::E_TOKEN_EOF, "EOF");
+        }
+
+        auto cNext = source_now()[0];
+
+        switch (cNext) {
+        case L'$':
+            m_iHead++;
+            return token_info(m_iLineNum, token_type::E_TOKEN_VAR_PREFIX, "$");
+        case L'(':
+            m_iHead++;
+            return token_info(m_iLineNum, token_type::E_TOKEN_LEFT_PAREN, "(");
+        case L')':
+            m_iHead++;
+            return token_info(m_iLineNum, token_type::E_TOKEN_RIGHT_PAREN, ")");
+        case L'=':
+            m_iHead++;
+            return token_info(m_iLineNum, token_type::E_TOKEN_EQUAL, "=");
+        case L'\"':
+            if (nextSource("\"\"")) {
+                m_iHead += 2;
+                return token_info(m_iLineNum, token_type::E_TOKEN_DUOQUOTE, "\"\"");
+            }
+            m_iHead++;
+            return token_info(m_iLineNum, token_type::E_TOKEN_QUOTE, "\"");
+        case L'\t':
+        case L'\n':
+        case L'\v':
+        case L'\f':
+        case L'\r':
+        case L' ': {
+            auto strIgnored = scanIgnored();
+            auto oldLine = m_iLineNum;
+            m_iHead += strIgnored.size();
+            processNewLine(strIgnored);
+            return token_info(oldLine, token_type::E_TOKEN_IGNORED, strIgnored);
+        }
+
+        default:
+            break;
+        }
+
+        if (cNext == '_' || std::isalpha(cNext)) {
+            auto strName = scanName();
+            auto itFind = s_mapKeyWordsTbl.find(strName);
+            if (itFind != s_mapKeyWordsTbl.end()) {
+                m_iHead += strName.size();
+                return token_info(m_iLineNum, itFind->second, strName);
+            }
+
+            m_iHead += strName.size();
+            return token_info(m_iLineNum, token_type::E_TOKEN_NAME, strName);
+        }
+
+        throw lexer_exception("unexpected symbol");
+    }
+
+    token_info nextToken(token_type _Guess)
+    {
+        auto myInfo = get_next_token();
+        if (!myInfo.matchType(_Guess)) {
+            throw lexer_exception("syntax error near , expecting ");
+        }
+
+        return myInfo;
+    }
+
+    token_type lookAhead()
+    {
+        if (m_instNextToken__.empty()) {
+            m_instNextToken__ = getNextToken();
+        }
+        return m_instNextToken__.type();
+    }
+
+    std::wstring source;
+    size_t idx_head = 0;
+    size_t idx_cursor = 0;
+    token_info token_next;
+};
+
+class parser_exception : public std::exception
+{
+public:
+    using exception::exception;
+};
+
+class Parser
+{
+public:
+    Parser(Lexer&& _Lex) :
+        m_istLex__(_Lex)
+    {
+    }
+
+    Parser(Lexer& _Lex) :
+        m_istLex__(_Lex)
+    {
+    }
+
+    SourceCode parse()
+    {
+        std::vector<Statement::ptr> vecStates;
+        auto iLineNum = m_istLex__.m_iLineNum;
+        while (m_istLex__.lookAhead() != token_type::E_TOKEN_EOF) {
+            vecStates.push_back(__parseStatement());
+        }
+
+        return SourceCode(iLineNum, vecStates);
+    }
+
+private:
+    void __parseIgnored()
+    {
+        if (m_istLex__.lookAhead() == token_type::E_TOKEN_IGNORED) {
+            m_istLex__.nextToken(token_type::E_TOKEN_IGNORED);
+        }
+    }
+
+    // $ + xxx
+    Variable __parseVariable()
+    {
+        auto numLine = m_istLex__.nextToken(token_type::E_TOKEN_VAR_PREFIX).num();
+        auto strName = m_istLex__.nextToken(token_type::E_TOKEN_NAME).token();
+        __parseIgnored();
+
+        return Variable(numLine, strName);
+    }
+
+    // " + xxx + "
+    std::string __parseString()
+    {
+        if (m_istLex__.lookAhead() == token_type::E_TOKEN_DUOQUOTE) {
+            m_istLex__.nextToken(token_type::E_TOKEN_DUOQUOTE);
+            return "";
+        }
+
+        m_istLex__.nextToken(token_type::E_TOKEN_QUOTE);
+        auto strStr = m_istLex__.scanBeforeToken("\"");
+        m_istLex__.nextToken(token_type::E_TOKEN_QUOTE);
+        return strStr;
+    }
+
+    // var + ig + = + ig + string + ig
+    Assignment::ptr __parseAssignment()
+    {
+        auto var = __parseVariable();
+        __parseIgnored();
+        m_istLex__.nextToken(token_type::E_TOKEN_EQUAL);
+        __parseIgnored();
+        auto strStr = __parseString();
+        __parseIgnored();
+
+        return std::make_shared<Assignment>(var.m_iLineNum__, var, strStr);
+    }
+
+    // print + ( + ig + var + ) + ig
+    Print::ptr __parsePrint()
+    {
+        auto line_num = m_istLex__.nextToken(token_type::E_TOKEN_PRINT).num();
+        m_istLex__.nextToken(token_type::E_TOKEN_LEFT_PAREN);
+        __parseIgnored();
+        auto variable = __parseVariable();
+        __parseIgnored();
+        m_istLex__.nextToken(token_type::E_TOKEN_RIGHT_PAREN);
+        __parseIgnored();
+
+        return std::make_shared<Print>(line_num, variable);
+    }
+
+    Statement::ptr __parseStatement()
+    {
+        if (m_istLex__.lookAhead() == token_type::E_TOKEN_PRINT) {
+            return __parsePrint();
+        }
+
+        if (m_istLex__.lookAhead() == token_type::E_TOKEN_VAR_PREFIX) {
+            return __parseAssignment();
+        }
+
+        throw parser_exception("unexpected token");
+    }
+
+    Lexer& m_istLex__;
+};
+
+// 解释器
+class interpreter_exception : public std::runtime_error
+{
+public:
+    using runtime_error::runtime_error;
+};
+
+class Interpreter
+{
+public:
+    Interpreter() = default;
+
+    Interpreter(std::string _Source) :
+        m_ast(Parser(Lexer(_Source)).parse())
+    {
+    }
+
+    void execute() { __resolveSourceCode(); }
+
+    void execute(std::string const& _Source)
+    {
+        m_ast = SourceCode(Parser(Lexer(_Source)).parse());
+        m_variables.clear();
+
+        execute();
+    }
+
+    bool hadVar(std::string _name) { return m_variables.find(_name) != m_variables.end(); }
+
+    bool getVar(std::string const _name, std::string& _Var)
+    {
+        auto itFind = m_variables.find(_name);
+        if (itFind == m_variables.end()) {
+            return false;
+        }
+
+        _Var = itFind->second;
+        return true;
+    }
+
+private:
+    void __resolvePrint(Print::ptr _Statement) { std::cout << m_variables[_Statement->m_istVar__.m_strName__]; }
+
+    void __resolveAssignment(Assignment::ptr _Statement)
+    {
+        m_variables[_Statement->m_istVar__.m_strName__] = _Statement->m_strStr__;
+    }
+
+    void __resolveStatement(Statement::ptr _Statement)
+    {
+        using std::static_pointer_cast;
+        if (dynamic_cast<Print*>(_Statement.get())) {
+            __resolvePrint(static_pointer_cast<Print>(_Statement));
+        }
+        else if (dynamic_cast<Assignment*>(_Statement.get())) {
+            __resolveAssignment(static_pointer_cast<Assignment>(_Statement));
+        }
+        else {
+            throw interpreter_exception(": unexpected statement type");
+        }
+    }
+
+    void __resolveSourceCode()
+    {
+        for (auto state : m_ast.m_vecStatements__) {
+            __resolveStatement(state);
+        }
+    }
+
+    SourceCode m_ast;
+    std::map<std::string, std::string> m_variables;
+};
+
+class Generator
+{
+public:
+    Generator() :
+        m_ossResult__(std::ios::app)
+    {
+    }
+
+    explicit Generator(std::string const& _Src) :
+        m_ossResult__(_Src, std::ios::app)
+    {
+    }
+
+    Generator(std::string&& _Src) :
+        Generator(_Src)
+    {
+    }
+
+    Generator& setVar(std::string _Name, std::string _Var)
+    {
+        m_ossResult__ << '$' << _Name << " = \"" << _Var << "\" ";
+
+        return *this;
+    }
+
+    Generator& setPrint(std::string _Name)
+    {
+        m_ossResult__ << " print( " << _Name << ')';
+
+        return *this;
+    }
+
+    std::string getResult()
+    {
+        auto res = m_ossResult__.str();
+        clr();
+        return res;
+    }
+
+    void clr() { m_ossResult__.str(""); }
+
+private:
+    std::ostringstream m_ossResult__;
+};
+}
 
 bool asst::CopilotConfig::parse_magic_code(const std::string& copilot_magic_code)
 {
